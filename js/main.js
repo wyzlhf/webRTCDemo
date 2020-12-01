@@ -1,5 +1,4 @@
 'use strict'
-
 var localVideo = document.querySelector('video#localvideo');
 var remoteVideo = document.querySelector('video#remotevideo');
 
@@ -9,7 +8,18 @@ var btnLeave = document.querySelector('button#leave');
 var offer = document.querySelector('textarea#offer');
 var answer = document.querySelector('textarea#answer');
 
+var report = document.querySelector('textarea#report');
 var shareDeskBox  = document.querySelector('input#shareDesk');
+var bandWidth  = document.querySelector('select#bandWidth');
+
+
+let bitrateGraph;
+let bitrateSeries;
+
+let packetGraph;
+let packetSeries;
+
+let lastResult;
 
 var pcConfig = {
   'iceServers': [
@@ -43,23 +53,80 @@ var socket = null;
 var offerdesc = null;
 var state = 'init';
 
+
 //设置定时器获取一些码流信息
-var timeoutId = setTimeout(updateState, 5000);
-function updateState()
+var timeoutId = setTimeout(updateCurTime, 1000);
+function updateCurTime()
 {
-	console.log("tianyeye && weijiaojiao tiamout:5000");
+	var date=new Date();  
+	var year=date.getFullYear(); //获取当前年份  
+	var mon=date.getMonth()+1; //获取当前月份  
+	var da=date.getDate(); //获取当前日  
+	var day=date.getDay(); //获取当前星期几  
+	var h=date.getHours(); //获取小时  
+	var m=date.getMinutes(); //获取分钟  
+	var s=date.getSeconds(); //获取秒  
+	var d=document.getElementById('Date');  
+	d.innerHTML='当前时间:'+year+'年'+mon+'月'+da+'日'+'星期'+day+' '+h+':'+m+':'+s;
 	clearTimeout(timeoutId); //清除上一次的定时器，否则会无限开多个
-	setTimeout(updateState, 5000);//方法中调用定时器实现循环
+	setTimeout(updateCurTime, 1000);//方法中调用定时器实现循环
 }
 
-var timeInterId = setInterval(updateStreamState, 1000);
+var timeInterId = setInterval(getReportStates, 1000);
 
-function updateStreamState()
+function getReportStates()
 {
-	console.log("weijiaojiao && tianye timeout:1000");
+	if(pc != null){
+		pc.getStats(null).then(stats =>{
+			let statsOutput = "";
+			stats.forEach(report => {
+				//格式化以字符串形式显示report对象值
+				statsOutput += JSON.stringify(report, null, 2);
+			});
+			report.value = statsOutput;
+		});
+	}
 	//达到什么条件最后可以销毁该对象
 	//clearInterval(timeInterId);
 }
+
+//允许设置发送码流的带宽码率
+function changeBw(){
+	bandWidth.disabled = true;
+	var bwKbps = bandWidth.options[bandWidth.selectedIndex].value;
+
+	var vSender = null;
+	var senders = pc.getSenders();
+	senders.forEach(sender =>{
+		if(sender && sender.track && sender.track.kind === 'video'){
+			vSender = sender;
+		}
+	});
+	var parameters = vSender.getParameters();
+	if(!parameters.encodings){
+		return;
+	}
+
+	if(bwKbps === "unlimited"){
+		return;
+	}
+	//换算单位
+	parameters.encodings[0].maxBitrate = bwKbps*1000;
+	vSender.setParameters(parameters)
+	.then(()=>{
+		bandWidth.disabled = false;
+		console.log("set parameters successed, rate:kbps", bwKbps);
+	})
+	.catch(err =>{
+		console.error(err);
+	})
+}
+
+
+
+
+
+
 
 // 以下代码是从网上找的
 //=========================================================================================
@@ -138,6 +205,7 @@ function conn(){
 
 		btnConn.disabled = true;
 		btnLeave.disabled = false;
+		bandWidth.disabled = true;
 		console.log('receive joined message, state=', state);
 	});
 
@@ -163,6 +231,7 @@ function conn(){
 		hangup();
 		closeLocalMedia();
 		state = 'leaved';
+		bandWidth.disabled = false;
 		console.log('receive full message, state=', state);
 		alert('the room is full!');
 	});
@@ -175,6 +244,7 @@ function conn(){
 
 		btnConn.disabled = false;
 		btnLeave.disabled = true;
+		bandWidth.disabled = false;
 	});
 
 	socket.on('bye', (room, id) => {
@@ -189,6 +259,7 @@ function conn(){
 		hangup();
 		offer.value = '';
 		answer.value = '';
+		bandWidth.disabled = false;
 		console.log('receive bye message, state=', state);
 	});
 
@@ -200,6 +271,7 @@ function conn(){
 
 		}
 		state = 'leaved';
+		bandWidth.disabled = false;
 		console.log('receive bye message, state=', state);
 	
 	});
@@ -226,6 +298,7 @@ function conn(){
 		}else if(data.hasOwnProperty('type') && data.type == 'answer'){
 			answer.value = data.sdp;
 			pc.setRemoteDescription(new RTCSessionDescription(data));
+			bandWidth.disabled = false;
 		
 		}else if (data.hasOwnProperty('type') && data.type === 'candidate'){
 			//收到信令服务器发送的candidate数据，则添加到本地pc上
@@ -271,7 +344,14 @@ function getMediaStream(stream){
 	}
 
 	localVideo.srcObject = localStream;
+	//画图使用
+	bitrateSeries = new TimelineDataSeries();
+	bitrateGraph = new TimelineGraphView('bitrateGraph', 'bitrateCanvas');
+	bitrateGraph.updateEndDate();
 
+	packetSeries = new TimelineDataSeries();
+	packetGraph = new TimelineGraphView('packetGraph', 'packetCanvas');
+	packetGraph.updateEndDate();
 	//这个函数的位置特别重要，
 	//一定要放到getMediaStream之后再调用
 	//否则就会出现绑定失败的情况
@@ -352,6 +432,7 @@ function getRemoteStream(e){
 	//添加远端音视频到本地Video播放器进行播放展示
 	remoteStream = e.streams[0];
 	remoteVideo.srcObject = e.streams[0];
+	bandWidth.disabled = false;
 }
 
 function handleOfferError(err){
@@ -488,8 +569,69 @@ function leave() {
 	offer.value = '';
 	answer.value = '';
 	btnConn.disabled = false;
+	bandWidth.disabled = false;
 	btnLeave.disabled = true;
+}
+
+
+var timeIdToGraph = setInterval(drawReportGraphs, 1000);
+function drawReportGraphs(){
+
+	if(!pc){
+		console.log("pc is null!");
+		return;	
+	}
+
+	var sender = pc.getSenders()[0];
+	if(!sender){
+		console.log("send onject is null");
+		return;	
+	}
+
+	sender.getStats()
+		.then(reports => {
+			reports.forEach(report =>{
+			console.log(report);
+			//我们只对 outbound-rtp 型的 Report 做处理
+			if(report.type === 'outbound-rtp'){
+				if(report.isRemote){
+					console.log("send remote is false");
+					return;	
+				}
+
+				var curTs = report.timestamp;
+				var bytes = report.bytesSent;
+				var packets = report.packetsSent;
+
+				if(lastResult && lastResult.has(report.id)){
+					var lastBytes = lastResult.get(report.id).bytesSent;
+					var lastTs = lastResult.get(report.id).timestamp;
+					var bitratePs = 8 * (bytes - lastBytes)/(curTs - lastTs)*1000;	
+					var packetPs =  packets - lastResult.get(report.id).packetsSent;
+					console.log("bitrate:", bitratePs, "packet:", packetPs);
+					//绘制发送码率随时间变化情况
+					bitrateSeries.addPoint(curTs, bitratePs);
+					bitrateGraph.setDataSeries([bitrateSeries]);
+					bitrateGraph.updateEndDate();
+
+					//绘制发送包随时间变化情况
+					packetSeries.addPoint(curTs,packetPs);
+					packetGraph.setDataSeries([packetSeries]);
+					packetGraph.updateEndDate();
+					}
+				
+				}
+			
+			});
+			lastResult = reports;
+		
+		})
+		.catch(err=>{
+			console.error(err);
+		});
+
 }
 
 btnConn.onclick = connSignalServer
 btnLeave.onclick = leave;
+bandWidth.onchange = changeBw;
